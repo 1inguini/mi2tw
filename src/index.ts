@@ -99,13 +99,11 @@ async function auth(code: string, env: Env): Promise<Response> {
   params.append("redirect_uri", `${env.URL}/callback`);
   params.append("code_verifier", "challenge");
 
-  const basic = btoa(`${env.client_id}:${env.client_secret}`);
-  console.log(basic);
   const data = await (await fetch("https://api.twitter.com/2/oauth2/token", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      "Authorization": `Basic ${basic}`,
+      "Authorization": `Basic ${btoa(`${env.client_id}:${env.client_secret}`)}`,
     },
     body: params,
   })).json<
