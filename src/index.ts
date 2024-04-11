@@ -1,16 +1,45 @@
-import { webHookBody } from "./webHookBody.ts";
 import {
   ExecutionContext,
   KVNamespace,
 } from "https://esm.sh/@cloudflare/workers-types@^4.20240405.0/experimental";
+import { acct } from "https://esm.sh/misskey-js@2024.3.1";
+import type { Note, User } from "https://esm.sh/misskey-js@^2024.3.1/entities";
 
-export interface Env {
+type WebhookPayload =
+  & {
+    server: string;
+    hookId: string;
+    userId: User["id"];
+    eventId: string;
+    createdAt: number;
+  }
+  & (
+    | { type: "follow" | "followed" | "unfollow"; body: { user: User } }
+    | { type: "note" | "reply" | "renote"; body: { note: Note } }
+  );
+// "mention" | "unfollow" | "follow" | "followed" | ;
+type Env = {
   mi2tw_Auth: KVNamespace;
   mi2tw_Uid: KVNamespace;
-  URL: string;
   client_id: string;
   client_secret: string;
-}
+};
+
+type MisskeyAccount = {
+  server: string;
+  id: string;
+};
+
+type TwitterAccount = {
+  id: number;
+  name: string;
+  username: string;
+};
+
+type AccountAssociation = {
+  twitter: TwitterAccount;
+  misskey: MisskeyAccount;
+};
 
 async function gatherResponse(response: Response) {
   const { headers } = response;
@@ -21,7 +50,7 @@ async function gatherResponse(response: Response) {
   return response.text();
 }
 
-async function refresh(uid: string, token: string, env: Env): Promise<string> {
+async function refresh(key: string, token: string, env: Env): Promise<string> {
   const params = new URLSearchParams();
   params.append("grant_type", "refresh_token");
   params.append("client_id", env.client_id);
@@ -32,6 +61,9 @@ async function refresh(uid: string, token: string, env: Env): Promise<string> {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": `Basic ${
+          btoa(`${env.client_id}:${env.client_secret}`)
+        }`,
       },
       body: params,
     }),
@@ -48,7 +80,7 @@ async function refresh(uid: string, token: string, env: Env): Promise<string> {
   console.log("refresh", res);
   if (data.access_token && data.expires_in && data.refresh_token) {
     env.mi2tw_Auth.put(
-      uid,
+      key,
       JSON.stringify({
         "access_token": data.access_token,
         "vaild_until": Date.now() + data.expires_in * 60,
@@ -91,12 +123,17 @@ async function revoke(uid: string, env: Env) {
   }
 }
 
-async function auth(code: string, env: Env): Promise<Response> {
+async function auth(
+  endpoint: URL,
+  code: string,
+  env: Env,
+): Promise<Response> {
+  const hook = new URL(endpoint.origin + endpoint.pathname);
   const params = new URLSearchParams();
   params.append("code", code);
   params.append("grant_type", "authorization_code");
   params.append("client_id", env.client_id);
-  params.append("redirect_uri", `${env.URL}/callback`);
+  params.append("redirect_uri", hook.href);
   params.append("code_verifier", "challenge");
 
   const data = await (await fetch("https://api.twitter.com/2/oauth2/token", {
@@ -119,21 +156,22 @@ async function auth(code: string, env: Env): Promise<Response> {
   console.log("auth", JSON.stringify(data));
 
   if (data.access_token) {
-    const user = await (await fetch("https://api.twitter.com/2/users/me", {
-      method: "GET",
-      headers: {
-        "Content-type": "application/json",
-        "Authorization": `Bearer ${data.access_token}`,
-      },
-    })).json<{ data: { "id": number; "name": string; "username": string } }>();
+    const twitter: TwitterAccount =
+      (await (await fetch("https://api.twitter.com/2/users/me", {
+        method: "GET",
+        headers: {
+          "Content-type": "application/json",
+          "Authorization": `Bearer ${data.access_token}`,
+        },
+      })).json<{ data: TwitterAccount }>()).data;
 
-    let uid = await env.mi2tw_Uid.get(user.data.id.toString());
-    if (uid == undefined) {
-      uid = crypto.randomUUID();
-      await env.mi2tw_Uid.put(user.data.id.toString(), uid);
-    }
+    // let uid = await env.mi2tw_Uid.get(user.data.id.toString());
+    // if (uid == undefined) {
+    //   uid = crypto.randomUUID();
+    //   await env.mi2tw_Uid.put(user.data.id.toString(), uid);
+    // }
     await env.mi2tw_Auth.put(
-      uid,
+      twitter.id,
       JSON.stringify({
         "access_token": data.access_token,
         "vaild_until": Date.now() + data.expires_in * 60,
@@ -141,8 +179,9 @@ async function auth(code: string, env: Env): Promise<Response> {
       }),
     );
 
+    const secret = crypto.randomUUID();
     const result = new Response(
-      `<meta charset='utf-8'>これをMisskey側WebhookのURLに入力: <input type="text" readonly value="${env.URL}"></input><br>これをMisskey側WebhookのSecretに入力: <input id="uid" type="text" readonly value="${uid}"></input><br><a href="./revoke?uid=${uid}"><button>アクセスキーを削除</button></a>`,
+      `<meta charset='utf-8'>これをMisskey側WebhookのURLに入力: <input type="text" readonly value="${hook}"></input><br>これをMisskey側WebhookのSecretに入力: <input id="uid" type="text" readonly value="${secret}"></input><br><a href="./revoke?uid=${uid}"><button>アクセスキーを削除</button></a>`,
       { headers: [["Content-type", "text/html"]] },
     );
     return result;
@@ -152,20 +191,19 @@ async function auth(code: string, env: Env): Promise<Response> {
 }
 
 async function tweet(
-  webHook: webHookBody,
-  uid: string,
+  server: string,
+  note: Note,
+  twitter: TwitterAccount,
   env: Env,
 ): Promise<void> {
-  const note = webHook.body.note;
-
   if (
-    webHook.type === "note" && note.renoteId == undefined &&
+    note.renoteId == undefined &&
     note.replyId == undefined && note.cw == undefined &&
     note.localOnly != true && note.text // && /\#mi2tw/.test(note.text)
   ) {
-    console.log("tw", uid);
-    const key = await env.mi2tw_Auth.get(uid);
-    console.log(key);
+    console.log("tw", twitter);
+    const key = await env.mi2tw_Auth.get(twitter.id);
+    console.log("key", key);
     if (!key) return;
     const res = JSON.parse(key) as {
       "access_token": string;
@@ -173,7 +211,7 @@ async function tweet(
       "refresh_token": string;
     };
     const token = res.vaild_until - 1000 < Date.now()
-      ? await refresh(uid, res.refresh_token, env)
+      ? await refresh(twitter.id, res.refresh_token, env)
       : res.access_token;
     // const token = await refresh(uid, res.refresh_token, env);
 
@@ -187,7 +225,7 @@ async function tweet(
             "Authorization": `Bearer ${token}`,
           },
           body: JSON.stringify({
-            "text": `${note.text}`,
+            "text": `${note.text}\n\n${server}/notes/${note.id}`,
           }),
         }),
       ),
@@ -199,35 +237,54 @@ export default {
   async fetch(
     request: Request,
     env: Env,
-    ctx: ExecutionContext,
+    _ctx: ExecutionContext,
   ): Promise<Response> {
-    const url = new URL(request.url);
-    console.log("url: ", url);
-    console.log("env", env);
-    env.URL = url.origin;
+    const endpoint: URL = new URL(request.url);
 
     if (request.method === "POST") {
-      const uid = request.headers.get("x-misskey-hook-secret");
+      const secret = request.headers.get("x-misskey-hook-secret");
+      const key = new URLPattern(`/:twitter_username`).exec(
+        endpoint,
+      );
       if (uid) {
-        const webHook = await request.json<webHookBody>();
-        await tweet(webHook, uid, env);
+        const payload = await request.json<WebhookPayload>();
+        if (payload.type == "note") {
+          await tweet(payload.server, payload.body.note, key, env);
+        }
         return new Response();
       }
-    } else if (url.pathname === "/callback") {
-      const code = url.searchParams.get("code");
+    } else if (endpoint.pathname === "/callback") {
+      const code = endpoint.searchParams.get("code");
       if (code) {
-        return await auth(code, env);
+        return await auth(endpoint, code, env);
       }
-    } else if (url.pathname === "/revoke") {
-      const uid = url.searchParams.get("uid");
+    } else if (endpoint.pathname === "/revoke") {
+      const uid = endpoint.searchParams.get("uid");
       if (uid) {
         await revoke(uid, env);
         return new Response("削除しました");
       }
     }
 
+    const twAuth: string =
+      `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${env.client_id}&scope=offline.access%20users.read%20tweet.read%20tweet.write&state=state&code_challenge=challenge&code_challenge_method=plain`;
     const res = new Response(
-      `<meta charset='utf-8'><h1>MisskeyのWebhook使って投稿をTwitterに転送するやつ</h1><br>(ローカル限定でない、リプライでない、リノートでない、CWもついてない投稿のみ)<br><a href='https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${env.client_id}&redirect_uri=${env.URL}/callback&scope=offline.access%20users.read%20tweet.read%20tweet.write&state=state&code_challenge=challenge&code_challenge_method=plain'>ここで認証</a>`,
+      `<meta charset='utf-8'>
+      <body>
+        <h1>MisskeyのWebhook使って投稿をTwitterに転送するやつ</h1><br>
+        (ローカル限定でない、リプライでない、リノートでない、CWもついてない投稿のみ)<br>
+        <label for="server">サーバーのドメイン: </label><input id="server" type="text" value="misskey.io" required />
+        <input id="auth" type="button" value="ドメインを入力してここで認証" />
+        <script>
+          document.getElementById('auth').addEventListener('click', (e) => {
+            location.href =
+              \`${twAuth}&redirect_uri=${new URL(
+        "callback/",
+        endpoint,
+      )}?server=\${document.getElementById('server').value}\`;
+          });
+        </script>
+      </body>`,
       { headers: [["Content-type", "text/html"]] },
     );
     return res;
