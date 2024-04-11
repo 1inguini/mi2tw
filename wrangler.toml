@@ -3,7 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2022-10-10"
 kv_namespaces = [
   { binding = "mi2tw_Auth", id = "b0d8851ca21040a4b06ff8ee470a9fd4" },
-  { binding = "mi2tw_Uid", id = "7cf7ff32c75d4b8e919d34609652f631" },
 ]
 
 [vars]
