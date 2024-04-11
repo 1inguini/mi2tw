@@ -1,9 +1,6 @@
-import {
-  ExecutionContext,
-  KVNamespace,
-} from "https://esm.sh/@cloudflare/workers-types@^4.20240405.0/experimental";
-import { acct } from "https://esm.sh/misskey-js@2024.3.1";
-import type { Note, User } from "https://esm.sh/misskey-js@^2024.3.1/entities";
+import { ExecutionContext, KVNamespace } from "@cloudflare/workers-types";
+import { toString } from "misskey-js/built/dts/acct";
+import type { Note, User } from "misskey-js/built/esm/entities";
 
 type WebhookPayload =
   & {
@@ -171,7 +168,7 @@ async function auth(
     //   await env.mi2tw_Uid.put(user.data.id.toString(), uid);
     // }
     await env.mi2tw_Auth.put(
-      twitter.id,
+      twitter.id.toString(),
       JSON.stringify({
         "access_token": data.access_token,
         "vaild_until": Date.now() + data.expires_in * 60,
@@ -181,7 +178,7 @@ async function auth(
 
     const secret = crypto.randomUUID();
     const result = new Response(
-      `<meta charset='utf-8'>これをMisskey側WebhookのURLに入力: <input type="text" readonly value="${hook}"></input><br>これをMisskey側WebhookのSecretに入力: <input id="uid" type="text" readonly value="${secret}"></input><br><a href="./revoke?uid=${uid}"><button>アクセスキーを削除</button></a>`,
+      `<meta charset='utf-8'>これをMisskey側WebhookのURLに入力: <input type="text" readonly value="${hook}"></input><br>これをMisskey側WebhookのSecretに入力: <input id="uid" type="text" readonly value="${secret}"></input><br><a href="./revoke?uid=${twitter.id.toString()}"><button>アクセスキーを削除</button></a>`,
       { headers: [["Content-type", "text/html"]] },
     );
     return result;
@@ -193,7 +190,7 @@ async function auth(
 async function tweet(
   server: string,
   note: Note,
-  twitter: TwitterAccount,
+  key: string,
   env: Env,
 ): Promise<void> {
   if (
@@ -201,8 +198,8 @@ async function tweet(
     note.replyId == undefined && note.cw == undefined &&
     note.localOnly != true && note.text // && /\#mi2tw/.test(note.text)
   ) {
-    console.log("tw", twitter);
-    const key = await env.mi2tw_Auth.get(twitter.id);
+    // console.log("tw", key);
+    // const key = await env.mi2tw_Auth.get(key);
     console.log("key", key);
     if (!key) return;
     const res = JSON.parse(key) as {
@@ -211,7 +208,7 @@ async function tweet(
       "refresh_token": string;
     };
     const token = res.vaild_until - 1000 < Date.now()
-      ? await refresh(twitter.id, res.refresh_token, env)
+      ? await refresh(key, res.refresh_token, env)
       : res.access_token;
     // const token = await refresh(uid, res.refresh_token, env);
 
@@ -246,10 +243,15 @@ export default {
       const key = new URLPattern(`/:twitter_username`).exec(
         endpoint,
       );
-      if (uid) {
+      if (key) {
         const payload = await request.json<WebhookPayload>();
         if (payload.type == "note") {
-          await tweet(payload.server, payload.body.note, key, env);
+          await tweet(
+            payload.server,
+            payload.body.note,
+            key.pathname.groups.twitter_username,
+            env,
+          );
         }
         return new Response();
       }
