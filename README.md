@@ -8,4 +8,7 @@
 
 * [deno](https://deno.com/), [denoflare](https://denoflare.dev)対応
 * おそらく削除されてたBasic認証?のコードを復元
-* #mi2tw とタグ付けされてなくても転送
+* #mi2tw とタグ付けされてなくても再投稿
+* ツイートにノートのリンクをつけて投稿する
+* 使うKVを一つに
+* Honoを使う
