@@ -250,7 +250,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       <body>
         <h1>MisskeyのWebhook使って投稿をTwitterに転送するやつ</h1><br>
         (ローカル限定でない、リプライでない、リノートでない、CWもついてない投稿のみ)<br>
-        <a href='https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${c.env.client_id}&redirect_uri=${origin}/callback&scope=offline.access%20users.read%20tweet.read%20tweet.write&state=state&code_challenge=challenge&code_challenge_method=plain'>ここで認証</a>
+        <a href='https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${c.env.client_id}&redirect_uri=${origin}/callback&scope=tweet.write&state=${state}&code_challenge=challenge&code_challenge_method=S256'>ここで認可</a>
       </body>`,
     );
   })
