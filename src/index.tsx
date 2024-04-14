@@ -54,7 +54,8 @@ function context(req: HonoRequest, env: Env): Context {
 //
 // CREATE TABLE webhook (
 //   webhook_id INTEGER NOT NULL UNIQUE PRIMARY KEY,
-//   secret TEXT NOT NULL
+//   hashed_secret TEXT NOT NULL
+//   salt TEXT NOT NULL,
 // );
 //
 // CREATE TABLE webhook_to_twitter (
@@ -100,33 +101,44 @@ type TwitterToken = {
 };
 
 type PreparedStatements = Readonly<{
+  insert_webhook(webhook: Webhook): D1PreparedStatement;
   insert_twitter(tw: TwitterAccount): D1PreparedStatement;
-  insert_token(tokens: TwitterToken): D1PreparedStatement;
+  insert_twitter_token(tokens: TwitterToken): D1PreparedStatement;
 }>;
 
 type Sql = Readonly<{
   batch<T = unknown>(
     queryGen: (stmts: PreparedStatements) => D1PreparedStatement[]
   ): Promise<D1Result<T>[]>;
+  first<T = unknown>(
+    queryGen: (stmts: PreparedStatements) => D1PreparedStatement
+  ): Promise<T | null>;
 }>;
 
-function prepareSql(db: D1Database) {
+function prepareSql(db: D1Database): Sql {
   const stmts = {
+    insert_webhook: db.prepare(
+      `INSERT INTO webhook(webhook_id, hashed_secret, salt)
+          VALUES(?1, ?2, ?3)
+          RETURNING webhook_id LIMIT 1`
+    ),
     insert_twitter: db.prepare(
       `INSERT INTO twitter(twitter_id, twitter_username, twitter_name)
           VALUES(?1, ?2, ?3)
-          RETURNING hex(twitter_id) LIMIT 1`
+          RETURNING twitter_id LIMIT 1`
     ),
-    insert_token: db.prepare(
+    insert_twitter_token: db.prepare(
       `INSERT INTO twitter_token(twitter_id, access_token, valid_until, refresh_token)
           VALUES(?1, ?2, ?3, ?4)
-          RETURNING hex(twitter_token_id) LIMIT 1`
+          RETURNING twitter_token_id LIMIT 1`
     ),
   };
   const prepared: PreparedStatements = {
+    insert_webhook: (w: Webhook) =>
+      stmts.insert_webhook.bind(w.id, w.hashed_secret, w.salt),
     insert_twitter: (tw: TwitterAccount) =>
       stmts.insert_twitter.bind(tw.id, tw.username, tw.name),
-    insert_token: (tk: TwitterToken) =>
+    insert_twitter_token: (tk: TwitterToken) =>
       stmts.insert_twitter.bind(
         tk.twitter_id,
         tk.access_token,
@@ -137,7 +149,10 @@ function prepareSql(db: D1Database) {
   return {
     batch: <T = unknown,>(
       queryGen: (_: PreparedStatements) => D1PreparedStatement[]
-    ): Promise<D1Result<T>[]> => db.batch(queryGen(prepared)),
+    ): Promise<D1Result<T>[]> => db.batch<T>(queryGen(prepared)),
+    first: <T = unknown,>(
+      queryGen: (_: PreparedStatements) => D1PreparedStatement
+    ): Promise<T | null> => queryGen(prepared).first<T>(),
   };
 }
 
@@ -170,6 +185,32 @@ async function fetch_twitter_account_of_token(
       })
     ).json<{ data: TwitterAccount }>()
   ).data;
+}
+
+function random_hex(bytes: number) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function sha256(text: string) {
+  const uint8 = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", uint8);
+  return Array.from(new Uint8Array(digest))
+    .map((v) => v.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function new_webhook(ctx: Context): Promise<Webhook> {
+  const webhook: Webhook = {
+    id: parseInt(random_hex(4), 16),
+    secret: random_hex(16),
+  };
+  if (await ctx.sql.first((sql) => sql.insert_webhook(webhook))) {
+    return webhook;
+  } else {
+    return new_webhook(ctx);
+  }
 }
 
 async function auth(
@@ -207,7 +248,7 @@ async function auth(
   );
   await ctx.sql.batch((s) => [
     s.insert_twitter(twitter_account),
-    s.insert_token({
+    s.insert_twitter_token({
       twitter_id: twitter_account.id,
       access_token: tokens.access_token,
       vaild_until: Date.now() + tokens.expires_in * 60,
@@ -348,11 +389,16 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
           <br />
           (ローカル限定でない、リプライでない、リノートでない、CWもついてない投稿のみ)
           <br />
+          <a href="/new">新しいWebhookを生成</a>
         </body>
       </html>
     );
   })
-  .get("/:id", async (c) => {
+  .get("/new", async (c) => {
+    const ctx = context(c.req, c.env);
+    return c.redirect("/");
+  })
+  .get("/:hex", async (c) => {
     const ctx = context(c.req, c.env);
     const url: URL = new URL(c.req.url);
     const state: string = "state"; // CSRF?のなんからしい
