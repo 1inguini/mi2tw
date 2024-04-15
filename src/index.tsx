@@ -213,53 +213,59 @@ function webhook_hex(w: Webhook) {
   return "0x" + w.id.toString(16).padStart(8, "0");
 }
 
-// async function auth(
-//   ctx: Context,
-//   callback: string,
-//   code: string
-// ): Promise<TwitterAccount> {
-//   const params = new URLSearchParams();
-//   params.append("code", code);
-//   params.append("grant_type", "authorization_code");
-//   params.append("client_id", ctx.twitter.client_id);
-//   params.append("redirect_uri", callback);
-//   params.append("code_verifier", "challenge");
+function no_search(url: string): URL {
+  const u: URL = new URL(url);
+  u.search = "";
+  return u;
+}
 
-//   const tokens = await (
-//     await fetch("https://api.twitter.com/2/oauth2/token", {
-//       method: "POST",
-//       headers: {
-//         "Content-Type": "application/x-www-form-urlencoded",
-//         Authorization: twitter_basic(ctx),
-//       },
-//       body: params,
-//     })
-//   ).json<{
-//     token_type: string;
-//     expires_in: number;
-//     access_token: string;
-//     scope: string;
-//     refresh_token: string;
-//   }>();
-//   console.log("auth", tokens);
+async function auth(
+  ctx: Context,
+  callback: string,
+  code: string
+): Promise<TwitterAccount> {
+  const params = new URLSearchParams();
+  params.append("code", code);
+  params.append("grant_type", "authorization_code");
+  params.append("client_id", ctx.twitter.client_id);
+  params.append("redirect_uri", callback);
+  params.append("code_verifier", "challenge");
 
-//   const twitter_account: TwitterAccount = await fetch_twitter_account_of_token(
-//     tokens.access_token
-//   );
-//   await ctx.sql.batch([
-//     ["insert_twitter", twitter_account],
-//     [
-//       "insert_twitter_token",
-//       {
-//         twitter_id: twitter_account.id,
-//         access_token: tokens.access_token,
-//         vaild_until: Date.now() + tokens.expires_in * 60,
-//         refresh_token: tokens.refresh_token,
-//       },
-//     ],
-//   ]);
-//   return twitter_account;
-// }
+  const tokens = await (
+    await fetch("https://api.twitter.com/2/oauth2/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: twitter_basic(ctx),
+      },
+      body: params,
+    })
+  ).json<{
+    token_type: string;
+    expires_in: number;
+    access_token: string;
+    scope: string;
+    refresh_token: string;
+  }>();
+  console.log("auth", tokens);
+
+  const twitter_account: TwitterAccount = await fetch_twitter_account_of_token(
+    tokens.access_token
+  );
+  await ctx.sql.batch([
+    ["insert_twitter", twitter_account],
+    [
+      "insert_twitter_token",
+      {
+        twitter_id: twitter_account.id,
+        access_token: tokens.access_token,
+        vaild_until: Date.now() + tokens.expires_in * 60,
+        refresh_token: tokens.refresh_token,
+      },
+    ],
+  ]);
+  return twitter_account;
+}
 
 // async function refresh(
 //   username: string,
@@ -397,9 +403,9 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
   })
   .get("/new", async (c) => {
     const ctx = context(c.req, c.env);
-    const url: URL = new URL(c.req.url);
     const webhook: Webhook = await new_webhook(ctx);
-    const webhook_url: string = `${url.origin}/${webhook_hex(webhook)}`;
+    const webhook_url: URL = no_search(c.req.url);
+    webhook_url.pathname = "/" + webhook_hex(webhook);
     return c.html(
       <html lang="ja-JP">
         <head>
@@ -408,7 +414,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
         <body>
           <p>
             これをMisskey側WebhookのURLに入力:
-            <input type="text" readonly value={webhook_url} />
+            <input type="text" readonly value={webhook_url.href} />
           </p>
           <p>
             これをMisskey側WebhookのSecretに入力:
@@ -439,7 +445,9 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
           </body>
         </html>
       );
-    const url: URL = new URL(c.req.url);
+    const callback: URL = no_search(c.req.url);
+    callback.pathname = hex + "/callback";
+    // callback.search = "?secret=" + webhook.secret;
     const state: string = "state"; // CSRF?のなんからしい
     return c.html(
       <html>
@@ -448,50 +456,62 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
         </head>
         <body>
           <a
-            href={`https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${ctx.twitter.client_id}&redirect_uri=${url.origin}${url.pathname}/callback&scope=offline.access%20users.read%20tweet.read%20tweet.write&state=${state}&code_challenge=challenge&code_challenge_method=S256`}
+            href={`https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${ctx.twitter.client_id}&redirect_uri=${callback}&scope=offline.access%20users.read%20tweet.read%20tweet.write&state=${state}&code_challenge=challenge&code_challenge_method=S256`}
           >
             ここでTwitterの認証
           </a>
         </body>
       </html>
     );
+  })
+  .get("/:hex/callback", async (c) => {
+    const { hex } = c.req.param();
+    const { code } = c.req.query();
+    const ctx = context(c.req, c.env);
+    const callback: string = no_search(c.req.url).href;
+    const webhook: Webhook | null = await ctx.sql.first([
+      "get_webhook",
+      parseInt(hex, 16),
+    ]);
+    if (!webhook)
+      return c.html(
+        <html>
+          <head>
+            <meta charset="utf-8" />
+          </head>
+          <body>
+            <p>認証に失敗しました</p>
+          </body>
+        </html>
+      );
+    const webhook_url: URL = no_search(c.req.url);
+    webhook_url.pathname = `/${hex}`;
+    if (code) {
+      const twitter: TwitterAccount = await auth(ctx, callback, code);
+      return c.html(
+        <html>
+          <head>
+            <meta charset="utf-8" />
+          </head>
+          <body>
+            <p>Twitterアカウント @{twitter.username} に投稿</p>
+            <p>
+              これをMisskey側WebhookのURLに入力:
+              <input type="text" readonly value={webhook_url.href} />
+            </p>
+            <p>
+              これをMisskey側WebhookのSecretに入力:
+              <input id="uid" type="text" readonly value={webhook.secret} />
+            </p>
+            <a href={`${webhook_url.href}/revoke`}>
+              <button>アクセスキーを削除</button>
+            </a>
+          </body>
+        </html>
+      );
+    }
+    return c.html("<meta charset='utf-8'>認証に失敗しました");
   });
-// .get("/:hex/callback", async (c) => {
-//   const ctx = context(c.req, c.env);
-//   const { hex } = c.req.param();
-//   const { code } = c.req.query();
-//   const origin: string = new URL(c.req.url).origin;
-//   const callback: string = origin + c.req.path;
-//   if (code) {
-//     const twitter: TwitterAccount = await auth(ctx, callback, code);
-//     if (twitter) {
-//       return c.html(
-//         <html>
-//           <head>
-//             <meta charset="utf-8" />
-//           </head>
-//           <body>
-//             これをMisskey側WebhookのURLに入力:
-//             <input type="text" readonly value={`${origin}/${hex}`}></input>
-//             <br />
-//             これをMisskey側WebhookのSecretに入力:
-//             <input
-//               id="uid"
-//               type="text"
-//               readonly
-//               value={webhook.secret}
-//             ></input>
-//             <br />
-//             <a href={`${origin}/${hex}/revoke`}>
-//               <button>アクセスキーを削除</button>
-//             </a>
-//           </body>
-//         </html>
-//       );
-//     }
-//   }
-//   return c.html("<meta charset='utf-8'>認証に失敗しました");
-// })
 // .get("/:hex/revoke", async (c) => {
 //   const { hex } = c.req.param();
 //   await revoke(hex, c.env);
