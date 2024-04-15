@@ -100,33 +100,36 @@ type TwitterToken = {
   refresh_token: string;
 };
 
-type PreparedStatementsType = Readonly<{
-  insert_webhook(webhook: Webhook): RowId;
-  insert_twitter(tw: TwitterAccount): RowId;
-  insert_twitter_token(tokens: TwitterToken): RowId;
+type StatementSigniture<P, R = RowId> = { param: P; return: R };
+
+type PreparedStatementsSigniture = Readonly<{
+  insert_webhook: StatementSigniture<Webhook>;
+  insert_twitter: StatementSigniture<TwitterAccount>;
+  insert_twitter_token: StatementSigniture<TwitterToken>;
 }>;
 
 type PreparedStatements = {
-  [S in keyof PreparedStatementsType]: (
-    _: Parameters<PreparedStatementsType[S]>
+  [S in keyof PreparedStatementsSigniture]: (
+    _: PreparedStatementsSigniture[S]["param"]
   ) => D1PreparedStatement;
-};
-
-type Query<S extends keyof PreparedStatementsType> = {
-  statement: S;
-  params: Parameters<PreparedStatementsType[S]>;
 };
 
 type Proxy<T> = void;
 
+type Query<S extends keyof PreparedStatementsSigniture> = {
+  statement: S;
+  param: PreparedStatementsSigniture[S]["param"];
+};
+
 type Sql = Readonly<{
   batch<T = unknown>(
-    queries: (_: PreparedStatements) => D1PreparedStatement[]
+    queries: Query<keyof PreparedStatements>[]
   ): Promise<D1Result<T>[]>;
-  first<S extends keyof PreparedStatementsType>(
-    statement: S,
-    args: Parameters<PreparedStatementsType[S]>
-  ): Promise<ReturnType<PreparedStatementsType[S]> | null>;
+  first<S extends keyof PreparedStatements>(
+    query: Query<S>
+  ): Promise<
+    PreparedStatementsSigniture[(typeof query)["statement"]]["return"] | null
+  >;
 }>;
 
 function prepareSql(db: D1Database): Sql {
@@ -148,15 +151,14 @@ function prepareSql(db: D1Database): Sql {
     ),
   };
   const prepared: {
-    [S in keyof PreparedStatementsType]: (
-      _: Parameters<PreparedStatementsType[S]>
+    [S in keyof PreparedStatementsSigniture]: (
+      _: PreparedStatementsSigniture[S]["param"]
     ) => D1PreparedStatement;
   } = {
-    insert_webhook: ([w]: [Webhook]) =>
-      stmts.insert_webhook.bind(w.id, w.secret),
-    insert_twitter: ([tw]: [TwitterAccount]) =>
+    insert_webhook: (w: Webhook) => stmts.insert_webhook.bind(w.id, w.secret),
+    insert_twitter: (tw: TwitterAccount) =>
       stmts.insert_twitter.bind(tw.id, tw.username, tw.name),
-    insert_twitter_token: ([tk]: [TwitterToken]) =>
+    insert_twitter_token: (tk: TwitterToken) =>
       stmts.insert_twitter.bind(
         tk.twitter_id,
         tk.access_token,
@@ -165,10 +167,14 @@ function prepareSql(db: D1Database): Sql {
       ),
   };
   return {
-    batch: <T = unknown,>(
-      queries: (_: PreparedStatements) => D1PreparedStatement[]
-    ): Promise<D1Result<T>[]> => db.batch(queries(prepared)),
-    first: (statement, params) => prepared[statement](params).first(),
+    batch: (queries) =>
+      db.batch(
+        queries.map(
+          <S extends keyof PreparedStatementsSigniture>(q: Query<S>) =>
+            prepared[q.statement](q.param)
+        )
+      ),
+    first: (query) => prepared[query.statement](query.param).first(),
   };
 }
 
@@ -279,11 +285,11 @@ async function auth(
 async function refresh(
   username: string,
   token: string,
-  env: Env
+  ctx: Context
 ): Promise<string> {
   const params = new URLSearchParams();
   params.append("grant_type", "refresh_token");
-  params.append("client_id", env.client_id);
+  params.append("client_id", ctx.twitter.client_id);
   params.append("refresh_token", token);
 
   const res = await gatherResponse(
@@ -291,7 +297,7 @@ async function refresh(
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${btoa(`${env.client_id}:${env.client_secret}`)}`,
+        Authorization: twitter_basic(ctx),
       },
       body: params,
     })
