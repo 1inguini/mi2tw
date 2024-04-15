@@ -14,6 +14,9 @@
 			"@cloudflare/workers-types"
 		]
 	},
+	"ts-node": {
+		"esm": true
+	},
 	"exclude": [
 		"node_modules",
 		"dist",

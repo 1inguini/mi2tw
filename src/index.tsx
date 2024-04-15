@@ -100,24 +100,33 @@ type TwitterToken = {
   refresh_token: string;
 };
 
-type PreparedStatements = Readonly<{
-  insert_webhook(webhook: Webhook): D1PreparedStatement;
-  insert_twitter(tw: TwitterAccount): D1PreparedStatement;
-  insert_twitter_token(tokens: TwitterToken): D1PreparedStatement;
+type PreparedStatementsType = Readonly<{
+  insert_webhook(webhook: Webhook): RowId;
+  insert_twitter(tw: TwitterAccount): RowId;
+  insert_twitter_token(tokens: TwitterToken): RowId;
 }>;
 
+type PreparedStatements = {
+  [S in keyof PreparedStatementsType]: (
+    _: Parameters<PreparedStatementsType[S]>
+  ) => D1PreparedStatement;
+};
+
+type Query<S extends keyof PreparedStatementsType> = {
+  statement: S;
+  params: Parameters<PreparedStatementsType[S]>;
+};
+
+type Proxy<T> = void;
+
 type Sql = Readonly<{
-  batch(queries: Query<keyof PreparedStatementsType>[]): Promise<{
-    [Q in keyof typeof queries]: (typeof queries)[Q] extends Query<
-      keyof PreparedStatementsType
-    >
-      ? ReturnType<PreparedStatementsType[(typeof queries)[Q]["statement"]]>
-      : never;
-  }>;
-  first(
-    query: keyof PreparedStatementsType,
-    args: Parameters<PreparedStatementsType[typeof query]>
-  ): Promise<ReturnType<PreparedStatementsType[typeof query]> | null>;
+  batch<T = unknown>(
+    queries: (_: PreparedStatements) => D1PreparedStatement[]
+  ): Promise<D1Result<T>[]>;
+  first<S extends keyof PreparedStatementsType>(
+    statement: S,
+    args: Parameters<PreparedStatementsType[S]>
+  ): Promise<ReturnType<PreparedStatementsType[S]> | null>;
 }>;
 
 function prepareSql(db: D1Database): Sql {
@@ -138,12 +147,16 @@ function prepareSql(db: D1Database): Sql {
           RETURNING twitter_token_id LIMIT 1`
     ),
   };
-  const prepared: PreparedStatements = {
-    insert_webhook: (w: Webhook) =>
-      stmts.insert_webhook.bind(w.id, w.hashed_secret, w.salt),
-    insert_twitter: (tw: TwitterAccount) =>
+  const prepared: {
+    [S in keyof PreparedStatementsType]: (
+      _: Parameters<PreparedStatementsType[S]>
+    ) => D1PreparedStatement;
+  } = {
+    insert_webhook: ([w]: [Webhook]) =>
+      stmts.insert_webhook.bind(w.id, w.secret),
+    insert_twitter: ([tw]: [TwitterAccount]) =>
       stmts.insert_twitter.bind(tw.id, tw.username, tw.name),
-    insert_twitter_token: (tk: TwitterToken) =>
+    insert_twitter_token: ([tk]: [TwitterToken]) =>
       stmts.insert_twitter.bind(
         tk.twitter_id,
         tk.access_token,
@@ -153,11 +166,9 @@ function prepareSql(db: D1Database): Sql {
   };
   return {
     batch: <T = unknown,>(
-      queryGen: (_: PreparedStatements) => D1PreparedStatement[]
-    ): Promise<D1Result<T>[]> => db.batch<T>(queryGen(prepared)),
-    first: <T = unknown,>(
-      queryGen: (_: PreparedStatements) => D1PreparedStatement
-    ): Promise<T | null> => queryGen(prepared).first<T>(),
+      queries: (_: PreparedStatements) => D1PreparedStatement[]
+    ): Promise<D1Result<T>[]> => db.batch(queries(prepared)),
+    first: (statement, params) => prepared[statement](params).first(),
   };
 }
 
@@ -211,7 +222,7 @@ async function new_webhook(ctx: Context): Promise<Webhook> {
     id: parseInt(random_hex(4), 16),
     secret: random_hex(16),
   };
-  if (await ctx.sql.first((sql) => sql.insert_webhook(webhook))) {
+  if (await ctx.sql.first("insert_webhook", [webhook])) {
     return webhook;
   } else {
     return new_webhook(ctx);
@@ -252,13 +263,15 @@ async function auth(
     tokens.access_token
   );
   await ctx.sql.batch((s) => [
-    s.insert_twitter(twitter_account),
-    s.insert_twitter_token({
-      twitter_id: twitter_account.id,
-      access_token: tokens.access_token,
-      vaild_until: Date.now() + tokens.expires_in * 60,
-      refresh_token: tokens.refresh_token,
-    }),
+    s.insert_twitter([twitter_account]),
+    s.insert_twitter_token([
+      {
+        twitter_id: twitter_account.id,
+        access_token: tokens.access_token,
+        vaild_until: Date.now() + tokens.expires_in * 60,
+        refresh_token: tokens.refresh_token,
+      },
+    ]),
   ]);
   return twitter_account;
 }
