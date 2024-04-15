@@ -107,12 +107,17 @@ type PreparedStatements = Readonly<{
 }>;
 
 type Sql = Readonly<{
-  batch<T = unknown>(
-    queryGen: (stmts: PreparedStatements) => D1PreparedStatement[]
-  ): Promise<D1Result<T>[]>;
-  first<T = unknown>(
-    queryGen: (stmts: PreparedStatements) => D1PreparedStatement
-  ): Promise<T | null>;
+  batch(queries: Query<keyof PreparedStatementsType>[]): Promise<{
+    [Q in keyof typeof queries]: (typeof queries)[Q] extends Query<
+      keyof PreparedStatementsType
+    >
+      ? ReturnType<PreparedStatementsType[(typeof queries)[Q]["statement"]]>
+      : never;
+  }>;
+  first(
+    query: keyof PreparedStatementsType,
+    args: Parameters<PreparedStatementsType[typeof query]>
+  ): Promise<ReturnType<PreparedStatementsType[typeof query]> | null>;
 }>;
 
 function prepareSql(db: D1Database): Sql {
