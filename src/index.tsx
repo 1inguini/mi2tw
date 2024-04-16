@@ -274,32 +274,6 @@ async function twitter_auth(
   if (oauth.isOAuth2Error(token)) return token;
   console.log("Access Token Response", token);
   if (!token.refresh_token) return { error: "missing refresh_token" };
-
-  // const params = new URLSearchParams();
-  // params.append("code", code);
-  // params.append("grant_type", "authorization_code");
-  // params.append("client_id", ctx.twitter.client_id);
-  // params.append("redirect_uri", callback);
-  // params.append("code_verifier", "challenge");
-
-  // const tokens = await (
-  //   await fetch("https://api.twitter.com/2/oauth2/token", {
-  //     method: "POST",
-  //     headers: {
-  //       "Content-Type": "application/x-www-form-urlencoded",
-  //       Authorization: twitter_basic(ctx),
-  //     },
-  //     body: params,
-  //   })
-  // ).json<{
-  //   token_type: string;
-  //   expires_in: number;
-  //   access_token: string;
-  //   scope: string;
-  //   refresh_token: string;
-  // }>();
-  // console.log("auth", tokens);
-
   const twitter_account: TwitterAccount = await fetch_twitter_account_of_token(
     token.access_token
   );

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS twitter_token (
   twitter_token_id INTEGER NOT NULL UNIQUE PRIMARY KEY,
   twitter_id INTEGER NOT NULL,
   access_token TEXT,
-  vaild_until INTEGER,
+  valid_until INTEGER,
   refresh_token TEXT NOT NULL,
   FOREIGN KEY (twitter_id) REFERENCES twitter (twitter_id) ON UPDATE CASCADE ON DELETE CASCADE
 );
