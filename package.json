@@ -11,12 +11,12 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240405.0",
     "misskey-js": "^2024.3.1",
-    "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
     "wrangler": "^3.50.0"
   },
   "dependencies": {
-    "hono": "^4.2.4"
+    "hono": "^4.2.4",
+    "oauth4webapi": "^2.10.4"
   },
   "packageManager": "pnpm@9.0.0-rc.2+sha256.56c6fdb47aaccbd84f172f5dd032820ad8ba66aeb4727832fb3158f8537f11cd"
 }

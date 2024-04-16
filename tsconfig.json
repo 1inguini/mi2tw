@@ -15,7 +15,9 @@
 		]
 	},
 	"ts-node": {
-		"esm": true
+		"compilerOptions": {
+			"module": "CommonJS"
+		}
 	},
 	"exclude": [
 		"node_modules",
