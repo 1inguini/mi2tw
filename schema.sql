@@ -7,13 +7,12 @@ CREATE TABLE IF NOT EXISTS webhook (
   secret TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS twitter (
-  twitter_id INTEGER NOT NULL UNIQUE PRIMARY KEY,
+  twitter_id TEXT NOT NULL UNIQUE PRIMARY KEY,
   twitter_username TEXT NOT NULL,
   twitter_name TEXT
 );
 CREATE TABLE IF NOT EXISTS twitter_token (
-  twitter_token_id INTEGER NOT NULL UNIQUE PRIMARY KEY,
-  twitter_id INTEGER NOT NULL,
+  twitter_id TEXT NOT NULL,
   access_token TEXT,
   valid_until INTEGER,
   refresh_token TEXT NOT NULL,
@@ -21,7 +20,7 @@ CREATE TABLE IF NOT EXISTS twitter_token (
 );
 CREATE TABLE IF NOT EXISTS webhook_to_twitter (
   webhook_id INTEGER NOT NULL,
-  twitter_id INTEGER NOT NULL,
-  FOREIGN KEY (webhook_id) REFERENCES webook (webhook_id) ON UPDATE CASCADE ON DELETE CASCADE,
+  twitter_id TEXT NOT NULL,
+  FOREIGN KEY (webhook_id) REFERENCES webhook (webhook_id) ON UPDATE CASCADE ON DELETE CASCADE,
   FOREIGN KEY (twitter_id) REFERENCES twitter (twitter_id) ON UPDATE CASCADE ON DELETE CASCADE
 );

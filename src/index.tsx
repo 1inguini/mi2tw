@@ -68,13 +68,13 @@ type Webhook = {
 };
 
 export type TwitterAccount = {
-  id: number;
+  id: string;
   username: string;
   name?: string;
 };
 
 type TwitterToken = {
-  twitter_id: RowId;
+  twitter_id: string;
   access_token?: string;
   vaild_until?: number;
   refresh_token: string;
@@ -123,17 +123,18 @@ type Sql = Readonly<{
 function prepareSql(db: D1Database): Sql {
   const stmts = {
     insert_s256: db.prepare(
-      `INSERT INTO s256(code_verifier, code_challenge)
+      `INSERT OR IGNORE INTO s256(code_verifier, code_challenge)
           VALUES(?1, ?2)
+          ON CONFLICT(code_verifier) DO NOTHING
           RETURNING rowid`
     ),
     insert_webhook: db.prepare(
-      `INSERT INTO webhook(webhook_id, secret)
+      `INSERT OR REPLACE INTO webhook(webhook_id, secret)
           VALUES(?1, ?2)
           RETURNING rowid`
     ),
     insert_twitter: db.prepare(
-      `INSERT INTO twitter(twitter_id, twitter_username, twitter_name)
+      `INSERT OR REPLACE INTO twitter(twitter_id, twitter_username, twitter_name)
           VALUES(?1, ?2, ?3)
           RETURNING rowid`
     ),
@@ -242,7 +243,6 @@ async function s256_memo(ctx: Context, code_verifier: string): Promise<void> {
   await ctx.sql.first(["insert_s256", { code_verifier, code_challenge }]);
 }
 
-const state: string = "state";
 async function twitter_auth(
   ctx: Context,
   redirect_uri: URL,
@@ -274,6 +274,7 @@ async function twitter_auth(
   if (oauth.isOAuth2Error(token)) return token;
   console.log("Access Token Response", token);
   if (!token.refresh_token) return { error: "missing refresh_token" };
+  console.log("token OK", token);
   const twitter_account: TwitterAccount = await fetch_twitter_account_of_token(
     token.access_token
   );
@@ -462,7 +463,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       no_search(c.req.url),
       state
     );
-    if (((t): t is oauth.OAuth2Error => true)(twitter)) {
+    if ("error" in twitter) {
       console.log("twitter auth failed", twitter);
       return c.html(
         <html>
