@@ -1,5 +1,6 @@
 import { D1Database } from "@cloudflare/workers-types";
 import { Hono, HonoRequest } from "hono";
+import { setCookie, getCookie } from "hono/cookie";
 import * as oauth from "oauth4webapi";
 import type { Note, User } from "misskey-js/built/esm/entities";
 
@@ -22,6 +23,8 @@ type Env = {
 
 const twitter_auth_server: oauth.AuthorizationServer = {
   issuer: "https://twitter.com/",
+  authorization_endpoint: "https://twitter.com/i/oauth2/authorize",
+  token_endpoint: "https://api.twitter.com/2/oauth2/token",
 };
 
 type Context = Readonly<{
@@ -179,7 +182,7 @@ function prepareSql(db: D1Database): Sql {
       ),
     first: (query) => {
       const prep = prepared[query[0]](query);
-      // console.log(prep);
+      console.log(JSON.parse(JSON.stringify(prep)));
       return prep.first();
     },
   };
@@ -241,15 +244,18 @@ async function s256_memo(ctx: Context, code_verifier: string): Promise<void> {
 
 const state: string = "state";
 async function twitter_auth(
-  ctx: Context
+  ctx: Context,
+  redirect_uri: URL,
+  state: string
 ): Promise<TwitterAccount | oauth.OAuth2Error> {
-  const redirect_uri = new URL(ctx.req.url);
+  const url = new URL(ctx.req.url);
   const params = oauth.validateAuthResponse(
     twitter_auth_server,
     ctx.twitter,
-    redirect_uri,
+    url,
     state
   );
+  console.log(params);
   if (oauth.isOAuth2Error(params)) return params;
   const response = await oauth.authorizationCodeGrantRequest(
     twitter_auth_server,
@@ -258,11 +264,13 @@ async function twitter_auth(
     redirect_uri.href,
     "challenge"
   );
+  console.log(response);
   const token = await oauth.processAuthorizationCodeOAuth2Response(
     twitter_auth_server,
     ctx.twitter,
     response
   );
+  console.log(token);
   if (oauth.isOAuth2Error(token)) return token;
   console.log("Access Token Response", token);
   if (!token.refresh_token) return { error: "missing refresh_token" };
@@ -432,6 +440,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
     const webhook: Webhook = await new_webhook(ctx);
     const webhook_url: URL = no_search(c.req.url);
     webhook_url.pathname = "/" + webhook_hex(webhook);
+    setCookie(c, "secret", webhook.secret);
     return c.html(
       <html lang="ja-JP">
         <head>
@@ -447,7 +456,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
             <input id="secret" type="text" readonly value={webhook.secret} />
           </p>
           <p>
-            <a href={webhook_url + "?secret=" + webhook.secret}>
+            <a href={webhook_url.href /* + "?secret=" + webhook.secret */}>
               Webhookの設定に移動
             </a>
           </p>
@@ -455,10 +464,68 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       </html>
     );
   })
+  .get("/callback", async (c) => {
+    const ctx = context(c.req, c.env);
+    const { state } = ctx.req.query();
+    const hex = state;
+    const webhook: Webhook | null = await ctx.sql.first([
+      "get_webhook",
+      parseInt(state, 16),
+    ]);
+    if (!webhook)
+      return c.html(
+        <html>
+          <head>
+            <meta charset="utf-8" />
+          </head>
+          <body>
+            <p>webhookの認証に失敗しました</p>
+          </body>
+        </html>
+      );
+    const twitter: TwitterAccount | oauth.OAuth2Error = await twitter_auth(
+      ctx,
+      no_search(c.req.url),
+      state
+    );
+    if (((t): t is oauth.OAuth2Error => true)(twitter)) {
+      console.log("twitter auth failed", twitter);
+      return c.html(
+        <html>
+          <head>
+            <meta charset="utf-8" />
+          </head>
+          <body>
+            <p>twitterの認証に失敗しました</p>
+          </body>
+        </html>
+      );
+    }
+    // const webhook_url: string = `${new URL(c.req.url).origin}/${hex}`;
+    // return c.html(
+    //   <html>
+    //     <head>
+    //       <meta charset="utf-8" />
+    //     </head>
+    //     <body>
+    //       <p>Twitterアカウント @{twitter.username} に投稿</p>
+    //       <p>
+    //         これをMisskey側WebhookのURLに入力:
+    //         <input type="text" readonly value={webhook_url} />
+    //       </p>
+    //       <p>
+    //         これをMisskey側WebhookのSecretに入力:
+    //         <input id="uid" type="text" readonly value={webhook.secret} />
+    //       </p>
+    //     </body>
+    //   </html>
+    // );
+    return c.redirect(`/${hex}`);
+  })
   .get("/:hex", async (c) => {
     const ctx = context(c.req, c.env);
     const { hex } = c.req.param();
-    const { secret } = c.req.query();
+    const secret = getCookie(c, "secret");
     const webhook = await ctx.sql.first(["get_webhook", parseInt(hex, 16)]);
     if (!webhook || webhook.secret !== secret)
       return c.html(
@@ -471,11 +538,13 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
           </body>
         </html>
       );
-    const redirect_url: URL = new URL(c.req.url);
-    redirect_url.pathname += "/callback";
+    const redirect_uri: URL = new URL(c.req.url);
+    redirect_uri.pathname = "/callback";
+    redirect_uri.search = "";
+    // redirect_uri.searchParams.set("hex", hex);
     const auth_url: URL = new URL("https://twitter.com/i/oauth2/authorize");
     auth_url.searchParams.set("client_id", ctx.twitter.client_id);
-    auth_url.searchParams.set("redirect_uri", redirect_url.href);
+    auth_url.searchParams.set("redirect_uri", redirect_uri.href);
     auth_url.searchParams.set("response_type", "code");
     auth_url.searchParams.set(
       "scope",
@@ -483,8 +552,9 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
     );
     auth_url.searchParams.set("code_challenge", "challenge");
     auth_url.searchParams.set("code_challenge_method", "plain");
-    const state: string = oauth.generateRandomState(); // CSRF?のなんからしい
-    auth_url.searchParams.set("state", state);
+    // const state: string = oauth.generateRandomState(); // CSRF?のなんからしい
+    auth_url.searchParams.set("state", hex);
+    console.log("auth_url", auth_url);
     const webhook_url = no_search(c.req.url);
     return c.html(
       <html>
@@ -502,62 +572,22 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       </html>
     );
   })
-  .get("/:hex/callback", async (c) => {
-    const { hex } = c.req.param();
-    const ctx = context(c.req, c.env);
-    const webhook: Webhook | null = await ctx.sql.first([
-      "get_webhook",
-      parseInt(hex, 16),
-    ]);
-    if (!webhook)
-      return c.html(
-        <html>
-          <head>
-            <meta charset="utf-8" />
-          </head>
-          <body>
-            <p>webhookの認証に失敗しました</p>
-          </body>
-        </html>
-      );
-    const twitter: TwitterAccount | oauth.OAuth2Error = await twitter_auth(ctx);
-    if (((t): t is oauth.OAuth2Error => true)(twitter)) {
-      console.log("twitter auth failed", twitter);
-      return c.html(
-        <html>
-          <head>
-            <meta charset="utf-8" />
-          </head>
-          <body>
-            <p>twitterの認証に失敗しました</p>
-          </body>
-        </html>
-      );
-    }
-    const webhook_url: string = `${new URL(c.req.url).origin}/${hex}`;
-    return c.html(
-      <html>
-        <head>
-          <meta charset="utf-8" />
-        </head>
-        <body>
-          <p>Twitterアカウント @{twitter.username} に投稿</p>
-          <p>
-            これをMisskey側WebhookのURLに入力:
-            <input type="text" readonly value={webhook_url} />
-          </p>
-          <p>
-            これをMisskey側WebhookのSecretに入力:
-            <input id="uid" type="text" readonly value={webhook.secret} />
-          </p>
-        </body>
-      </html>
-    );
-    return c.redirect(webhook_url);
-  })
   .get("/:hex/delete", async (c) => {
     const ctx: Context = context(c.req, c.env);
     const { hex } = c.req.param();
+    const secret = getCookie(c, "secret");
+    const webhook = await ctx.sql.first(["get_webhook", parseInt(hex, 16)]);
+    if (!webhook || webhook.secret !== secret)
+      return c.html(
+        <html>
+          <head>
+            <meta charset="utf-8" />
+          </head>
+          <body>
+            <p>認証に失敗しました</p>
+          </body>
+        </html>
+      );
     if (await ctx.sql.first(["delete_webhook", parseInt(hex, 16)]))
       return c.redirect(new URL(c.req.url).origin);
     else
