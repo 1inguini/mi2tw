@@ -81,27 +81,32 @@ type StatementSigniture<P, R> = {
   param: P;
   return: R;
 };
-type InsertSigniture<P> = StatementSigniture<P, RowId>;
-type GetSigniture<R> = StatementSigniture<RowId, R>;
+type WriteSigniture<P> = StatementSigniture<P, RowId>;
+type ReadSigniture<R> = StatementSigniture<RowId, R>;
 
 type PreparedStatementsSigniture = Readonly<{
   insert_s256: StatementSigniture<S256, string>;
-  insert_webhook: InsertSigniture<Webhook>;
-  insert_twitter: InsertSigniture<TwitterAccount>;
-  insert_twitter_token: InsertSigniture<TwitterToken>;
-  get_webhook: GetSigniture<Webhook>;
+  insert_webhook: WriteSigniture<Webhook>;
+  insert_twitter: WriteSigniture<TwitterAccount>;
+  insert_webhook_to_twitter: WriteSigniture<{
+    webhook_id: RowId;
+    twitter_id: RowId;
+  }>;
+  insert_twitter_token: WriteSigniture<TwitterToken>;
+  delete_webhook: WriteSigniture<RowId>;
+  get_webhook: ReadSigniture<Webhook>;
 }>;
-
-type PreparedStatements = {
-  [S in keyof PreparedStatementsSigniture]: (
-    _: PreparedStatementsSigniture[S]["param"]
-  ) => D1PreparedStatement;
-};
 
 type Query<S extends keyof PreparedStatementsSigniture> = [
   S,
   PreparedStatementsSigniture[S]["param"]
 ];
+
+type PreparedStatements = {
+  [S in keyof PreparedStatementsSigniture]: (
+    _: Query<S>
+  ) => D1PreparedStatement;
+};
 
 type Sql = Readonly<{
   batch<T = unknown>(
@@ -117,81 +122,72 @@ function prepareSql(db: D1Database): Sql {
     insert_s256: db.prepare(
       `INSERT INTO s256(code_verifier, code_challenge)
           VALUES(?1, ?2)
-          RETURNING code_verifier`
+          RETURNING rowid`
     ),
     insert_webhook: db.prepare(
       `INSERT INTO webhook(webhook_id, secret)
           VALUES(?1, ?2)
-          RETURNING webhook_id`
+          RETURNING rowid`
     ),
     insert_twitter: db.prepare(
       `INSERT INTO twitter(twitter_id, twitter_username, twitter_name)
           VALUES(?1, ?2, ?3)
-          RETURNING twitter_id`
+          RETURNING rowid`
+    ),
+    insert_webhook_to_twitter: db.prepare(
+      `INSERT INTO webhook_to_twitter(webhook_id, twitter_id)
+          VALUES(?1, ?2)
+          RETURNING rowid`
     ),
     insert_twitter_token: db.prepare(
       `INSERT INTO twitter_token(twitter_id, access_token, valid_until, refresh_token)
           VALUES(?1, ?2, ?3, ?4)
-          RETURNING twitter_token_id`
+          RETURNING rowid`
+    ),
+    delete_webhook: db.prepare(
+      `DELETE FROM webhook WHERE webhook_id = ?1
+        RETURNING rowid`
     ),
     get_webhook: db.prepare(
-      `SELECT * FROM webhook WHERE webhook_id = ?1 LIMIT 1`
+      `SELECT * FROM webhook
+        WHERE webhook_id = ?1 LIMIT 1`
     ),
   };
-  const prepared: {
-    [S in keyof PreparedStatementsSigniture]: (
-      _: PreparedStatementsSigniture[S]["param"]
-    ) => D1PreparedStatement;
-  } = {
-    insert_s256: (c: S256) =>
-      stmts.insert_webhook.bind(c.code_verifier, c.code_challenge),
-    insert_webhook: (w: Webhook) => stmts.insert_webhook.bind(w.id, w.secret),
-    insert_twitter: (tw: TwitterAccount) =>
-      stmts.insert_twitter.bind(tw.id, tw.username, tw.name),
-    insert_twitter_token: (tk: TwitterToken) =>
-      stmts.insert_twitter.bind(
+  const prepared: PreparedStatements = {
+    insert_s256: ([s, c]) => stmts[s].bind(c.code_verifier, c.code_challenge),
+    insert_webhook: ([s, w]) => stmts[s].bind(w.id, w.secret),
+    insert_webhook_to_twitter: ([s, p]) =>
+      stmts[s].bind(p.webhook_id, p.twitter_id),
+    insert_twitter: ([s, tw]) => stmts[s].bind(tw.id, tw.username, tw.name),
+    insert_twitter_token: ([s, tk]) =>
+      stmts[s].bind(
         tk.twitter_id,
         tk.access_token,
         tk.vaild_until,
         tk.refresh_token
       ),
-    get_webhook: (id: RowId) => stmts.get_webhook.bind(id),
+    delete_webhook: ([s, id]) => stmts[s].bind(id),
+    get_webhook: ([s, id]) => stmts[s].bind(id),
   };
   return {
     batch: (queries) =>
       db.batch(
         queries.map(
-          <S extends keyof PreparedStatementsSigniture>(q: Query<S>) =>
-            prepared[q[0]](q[1])
+          <S extends keyof PreparedStatementsSigniture>(query: Query<S>) =>
+            prepared[query[0]](query)
         )
       ),
-    first: (query) => prepared[query[0]](query[1]).first(),
+    first: (query) => {
+      const prep = prepared[query[0]](query);
+      // console.log(prep);
+      return prep.first();
+    },
   };
-}
-
-async function gatherResponse(response: Response) {
-  const { headers } = response;
-  const contentType = headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return JSON.stringify(await response.json());
-  }
-  return response.text();
 }
 
 async function fetch_twitter_account_of_token(
   access_token: string
 ): Promise<TwitterAccount> {
-  // return await (
-  //   await (
-  //     await fetch("https://api.twitter.com/2/users/me", {
-  //       method: "GET",
-  //       headers: {
-  //         "Content-type": "application/json",
-  //         Authorization: `Bearer ${access_token}`,
-  //       },
-  //     })
-  //   ).json<{ data: TwitterAccount }>()
-  // ).data;
   return (
     await (
       await oauth.protectedResourceRequest(
@@ -408,25 +404,6 @@ async function twitter_auth(
 //   }
 // }
 
-// async function revoke(uid: string, env: Env) {
-//   const res = await env.mi2tw_Auth.get(uid);
-//   if (res) {
-//     const params = new URLSearchParams();
-//     params.append("client_id", env.twitter_client_id);
-//     params.append("token", JSON.parse(res).access_token);
-
-//     await fetch("https://api.twitter.com/2/oauth2/token", {
-//       method: "POST",
-//       headers: {
-//         "Content-Type": "application/x-www-form-urlencoded",
-//       },
-//       body: params,
-//     });
-
-//     env.mi2tw_Auth.delete(uid);
-//   }
-// }
-
 function twitter_basic(ctx: Context) {
   return (
     "Basic " + btoa(`${ctx.twitter.client_id}:${ctx.twitter.client_secret}`)
@@ -508,13 +485,19 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
     auth_url.searchParams.set("code_challenge_method", "plain");
     const state: string = oauth.generateRandomState(); // CSRF?のなんからしい
     auth_url.searchParams.set("state", state);
+    const webhook_url = no_search(c.req.url);
     return c.html(
       <html>
         <head>
           <meta charset="utf-8" />
         </head>
         <body>
-          <a href={auth_url.href}>ここでTwitterの認証</a>
+          <p>
+            <a href={auth_url.href}>ここでTwitterの認証</a>
+          </p>
+          <p>
+            <a href={webhook_url.href + "/delete"}>ここでWebhookを削除</a>
+          </p>
         </body>
       </html>
     );
@@ -567,19 +550,28 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
             これをMisskey側WebhookのSecretに入力:
             <input id="uid" type="text" readonly value={webhook.secret} />
           </p>
-          <a href={`${webhook_url}/revoke`}>
-            <button>アクセスキーを削除</button>
-          </a>
         </body>
       </html>
     );
     return c.redirect(webhook_url);
+  })
+  .get("/:hex/delete", async (c) => {
+    const ctx: Context = context(c.req, c.env);
+    const { hex } = c.req.param();
+    if (await ctx.sql.first(["delete_webhook", parseInt(hex, 16)]))
+      return c.redirect(new URL(c.req.url).origin);
+    else
+      return c.html(
+        <html>
+          <head>
+            <meta charset="utf-8" />
+          </head>
+          <body>
+            <p>Webhookを削除できませんでした</p>
+          </body>
+        </html>
+      );
   });
-// .get("/:hex/revoke", async (c) => {
-//   const { hex } = c.req.param();
-//   await revoke(hex, c.env);
-//   return c.html("<meta charset='utf-8'>削除しました");
-// })
 // .post("/:hex", async (c) => {
 //   const { hex } = c.req.param();
 //   const secret = c.req.header("x-misskey-hook-secret");
