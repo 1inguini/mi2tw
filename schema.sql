@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS twitter (
   twitter_name TEXT
 );
 CREATE TABLE IF NOT EXISTS twitter_token (
-  twitter_id TEXT NOT NULL,
+  twitter_id TEXT,
   access_token TEXT,
   valid_until INTEGER,
   refresh_token TEXT NOT NULL,
