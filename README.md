@@ -13,3 +13,5 @@
 * ツイートにノートのリンクをつけて投稿する
 * 使うKVを一つに
 * Honoを使う
+* Cloudflare KVではなくCloudflare D1(RDBMS)を使う
+* TODO: twitterの認可フローのcode_challenge_methodをplainではなくS256に

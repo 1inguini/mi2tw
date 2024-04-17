@@ -6,11 +6,18 @@
 		"lib": [
 			"esnext"
 		],
+		"jsx": "react-jsx",
+		"jsxImportSource": "hono/jsx",
 		"strict": true,
 		"moduleResolution": "node",
 		"types": [
 			"@cloudflare/workers-types"
 		]
+	},
+	"ts-node": {
+		"compilerOptions": {
+			"module": "CommonJS"
+		}
 	},
 	"exclude": [
 		"node_modules",

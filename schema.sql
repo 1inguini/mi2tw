@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS s256 (
+  code_verifier TEXT NOT NULL UNIQUE PRIMARY KEY,
+  code_challenge TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS webhook (
+  webhook_id INTEGER NOT NULL UNIQUE PRIMARY KEY,
+  secret TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS token (
+  webhook_id INTEGER NOT NULL UNIQUE PRIMARY KEY,
+  access_token TEXT,
+  valid_until INTEGER,
+  refresh_token TEXT NOT NULL,
+  FOREIGN KEY (webhook_id) REFERENCES webhook(webhook_id) ON UPDATE CASCADE ON DELETE CASCADE
+);
