@@ -1,7 +1,6 @@
 import { D1Database } from "@cloudflare/workers-types";
 import { Hono, HonoRequest } from "hono";
 import { setCookie, getCookie } from "hono/cookie";
-import { logger } from "hono/logger";
 import * as oauth from "oauth4webapi";
 import type { Note, User } from "misskey-js/built/esm/entities";
 
@@ -298,27 +297,19 @@ async function twitter_refresh(
   webhook_id: RowId,
   refresh_token: string
 ): Promise<Token | oauth.OAuth2Error> {
-  const params = new URLSearchParams();
-  params.append("grant_type", "refresh_token");
-  params.append("client_id", ctx.twitter.client_id);
-  params.append("refresh_token", refresh_token);
-  const res: oauth.TokenEndpointResponse = await (
-    await fetch("https://api.twitter.com/2/oauth2/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${btoa(
-          `${ctx.twitter.client_id}:${ctx.twitter.client_secret}`
-        )}`,
-      },
-      body: params,
-    })
-  ).json<oauth.TokenEndpointResponse>();
-  console.log("response", res);
-  // if (oauth.isOAuth2Error(res)) return res;
+  const res = await oauth.processRefreshTokenResponse(
+    twitter_auth_server,
+    ctx.twitter,
+    await oauth.refreshTokenGrantRequest(
+      twitter_auth_server,
+      ctx.twitter,
+      refresh_token
+    )
+  );
+  if (oauth.isOAuth2Error(res)) return res;
   if (!res.refresh_token) return { error: "missing refresh_token" };
   const token: Token | undefined = token_from_response(res);
-  if (!token) return { error: "missing access_token" };
+  if (!token) return { error: "missing refresh_token" };
   ctx.sql.first(["insert_token", { ...token, webhook_id }]);
   return token;
 }
@@ -341,7 +332,6 @@ async function tweet(
 }
 
 export default new Hono<{ Bindings: Env }>({ strict: false })
-  .use(logger())
   .get("/", async (c) => {
     return c.html(
       <html lang="ja-JP">
@@ -547,6 +537,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       c.status(400);
       return c.text("twitterが認証できませんでした");
     }
+
     console.log("token", token);
     const refresh_token: boolean = ((b): b is true => true)(
       !token?.vaild_until ||
@@ -555,7 +546,6 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
     const updated_token: Token | oauth.OAuth2Error = refresh_token
       ? await twitter_refresh(ctx, webhook.webhook_id, token.refresh_token)
       : token;
-    console.log("updated_token", updated_token);
     if (
       !((t): t is Token => true)(updated_token) ||
       !updated_token.access_token
@@ -563,6 +553,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       c.status(400);
       return c.text("twitterが認証できませんでした");
     }
+    console.log("updated_token", updated_token);
     const note = payload.type === "note" ? payload.body.note : null;
     if (
       note &&
