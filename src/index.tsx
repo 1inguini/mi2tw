@@ -1,4 +1,4 @@
-import { D1Database } from "@cloudflare/workers-types";
+// import { D1Database } from "@cloudflare/workers-types";
 import { Hono, HonoRequest } from "hono";
 import { setCookie, getCookie } from "hono/cookie";
 import * as oauth from "oauth4webapi";
@@ -533,12 +533,11 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       "get_token_of_webhook",
       webhook.webhook_id,
     ]);
+    console.log("token", token);
     if (!token) {
       c.status(400);
       return c.text("twitterが認証できませんでした");
     }
-
-    console.log("token", token);
     const refresh_token: boolean = ((b): b is true => true)(
       !token?.vaild_until ||
         (token?.vaild_until && Date.now() < token.vaild_until - 1000)
@@ -546,6 +545,7 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
     const updated_token: Token | oauth.OAuth2Error = refresh_token
       ? await twitter_refresh(ctx, webhook.webhook_id, token.refresh_token)
       : token;
+    console.log("updated_token", updated_token);
     if (
       !((t): t is Token => true)(updated_token) ||
       !updated_token.access_token
@@ -553,7 +553,6 @@ export default new Hono<{ Bindings: Env }>({ strict: false })
       c.status(400);
       return c.text("twitterが認証できませんでした");
     }
-    console.log("updated_token", updated_token);
     const note = payload.type === "note" ? payload.body.note : null;
     if (
       note &&
